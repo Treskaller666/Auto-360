@@ -811,4 +811,176 @@ function renderAR(){
 setInterval(()=>{ const el=$('#stamp'); if(el) el.textContent = new Date().toLocaleString('es-CL') }, 1000)
 </script>
 </body>
-</html>
+<script type="module">
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+
+// 1) Conexión
+const SUPABASE_URL = "https://TU-PROYECTO.supabase.co";
+const SUPABASE_ANON_KEY = "TU-ANON-KEY";
+const sb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+// 2) Adaptadores UI <-> DB
+const toUI = (row)=> ({ code: row.sku, name: row.nombre, qty: row.stock ?? 0, min: row.stock_min ?? 0 });
+const toDB = (it)=> ({ sku: it.code, nombre: it.name, stock: it.qty ?? 0, stock_min: it.min ?? 0 });
+const $ = (s)=> document.querySelector(s);
+
+// 3) API contra 'inventario'
+async function invList(){
+  const { data, error } = await sb.from('inventario').select('sku,nombre,stock,stock_min').order('nombre');
+  if(error) throw error;
+  return data.map(toUI);
+}
+async function invUpsert(item){
+  const row = toDB(item);
+  const { data: exists } = await sb.from('inventario').select('sku').eq('sku', row.sku).maybeSingle();
+  let res;
+  if(exists){
+    res = await sb.from('inventario').update(row).eq('sku', row.sku).select().single();
+  }else{
+    res = await sb.from('inventario').insert(row).select().single();
+  }
+  if(res.error) throw res.error;
+  return toUI(res.data);
+}
+async function invDelete(sku){
+  const { error } = await sb.from('inventario').delete().eq('sku', sku);
+  if(error) throw error;
+}
+
+// 4) Wire: usa tu DOM existente (IDs ya en tu HTML)
+const tbBoss = $('#bossStock');          // <tbody> jefe
+const tbTech = $('#tblStock');           // <tbody> técnico (solo lectura)
+const modal  = $('#stockModal');         // modal existente
+const title  = $('#stockModalTitle');
+const f_code = $('#f_code');
+const f_name = $('#f_name');
+const f_qty  = $('#f_qty');
+const f_min  = $('#f_min');
+const btnAdd = $('#btnAddItem');
+const btnSave= $('#btnSaveItem');
+const btnClose=$('#btnCloseModal');
+const btnCsv = $('#btnExportCSV');
+
+let cache = [];
+
+function renderBoss(){
+  if(!tbBoss) return;
+  tbBoss.innerHTML = '';
+  cache.forEach((p, idx)=>{
+    const low = (p.qty||0) <= (p.min||0);
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${p.code}</td>
+      <td>${p.name}</td>
+      <td>${p.qty ?? 0}</td>
+      <td>${p.min ?? 0}</td>
+      <td>${low?'<span class="chip low">Bajo</span>':'<span class="chip ok">OK</span>'}</td>
+      <td class="actions">
+        <button class="btn" data-i="${idx}" data-act="edit"><i class="ri-pencil-line"></i></button>
+        <button class="btn" data-i="${idx}" data-act="clone"><i class="ri-file-copy-line"></i></button>
+        <button class="btn" data-i="${idx}" data-act="del"><i class="ri-delete-bin-6-line"></i></button>
+      </td>`;
+    tbBoss.appendChild(tr);
+  });
+
+  tbBoss.onclick = async (e)=>{
+    const b = e.target.closest('button'); if(!b) return;
+    const i = Number(b.dataset.i);
+    const act = b.dataset.act;
+    const it = cache[i]; if(!it) return;
+    if(act==='edit'){ openModal(it); }
+    if(act==='clone'){ await invUpsert({...it, code: it.code+'-C'}); await reload(); }
+    if(act==='del' && confirm('¿Eliminar este ítem?')){ await invDelete(it.code); await reload(); }
+  };
+}
+
+function renderTech(){
+  if(!tbTech) return;
+  tbTech.innerHTML = '';
+  cache.forEach(p=>{
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${p.code}</td><td>${p.name}</td><td>${p.qty ?? 0}</td><td>${p.min ?? 0}</td>`;
+    tbTech.appendChild(tr);
+  });
+}
+
+function openModal(item=null){
+  if(!modal) return;
+  if(title) title.textContent = item ? 'Editar ítem' : 'Nuevo ítem';
+  if(f_code) f_code.value = item?.code || '';
+  if(f_name) f_name.value = item?.name || '';
+  if(f_qty)  f_qty.value  = item?.qty  ?? 0;
+  if(f_min)  f_min.value  = item?.min  ?? 0;
+  modal.classList.add('open'); // respeta tu CSS
+}
+function closeModal(){ modal?.classList.remove('open'); }
+
+btnAdd?.addEventListener('click', ()=> openModal());
+btnClose?.addEventListener('click', closeModal);
+btnSave?.addEventListener('click', async ()=>{
+  const code = f_code?.value.trim();
+  const name = f_name?.value.trim();
+  const qty  = Math.max(0, Number(f_qty?.value||0));
+  const min  = Math.max(0, Number(f_min?.value||0));
+  if(!code || !name){ alert('Código y nombre son obligatorios.'); return; }
+  await invUpsert({ code, name, qty, min });
+  closeModal(); await reload();
+});
+btnCsv?.addEventListener('click', ()=>{
+  const rows = [['code','name','qty','min'], ...cache.map(s=> [s.code, s.name, s.qty||0, s.min||0])];
+  const csv = rows.map(r=> r.map(x=> `"${String(x).replace(/"/g,'""')}"`).join(',')).join('\n');
+  const blob = new Blob([csv],{type:'text/csv;charset=utf-8;'}); const url = URL.createObjectURL(blob);
+  const a = document.createElement('a'); a.href=url; a.download='stock_supabase.csv'; a.click(); URL.revokeObjectURL(url);
+});
+
+async function reload(){
+  cache = await invList();
+  renderBoss(); renderTech();
+}
+
+// Primera carga
+reload();
+</script>
+<script type="module">
+// Reusa 'sb' del bloque anterior (mismo archivo)
+
+async function upsertCliente({ nombre, rut=null, email=null, telefono=null }){
+  if(email){
+    const { data } = await sb.from('cliente').select('*').eq('email', email).maybeSingle();
+    if(data) return data;
+  }
+  if(rut){
+    const { data } = await sb.from('cliente').select('*').eq('rut', rut).maybeSingle();
+    if(data) return data;
+  }
+  const { data, error } = await sb.from('cliente').insert({ nombre, rut, email, telefono }).select().single();
+  if(error) throw error; return data;
+}
+async function upsertVehiculo({ cliente_id, patente, marca=null, modelo=null, ano=null }){
+  const { data: v } = await sb.from('vehiculo').select('*').eq('patente', patente).maybeSingle();
+  if(v) return v;
+  const { data, error } = await sb.from('vehiculo').insert({ cliente_id, patente, marca, modelo, ano }).select().single();
+  if(error) throw error; return data;
+}
+export async function crearCitaUI({ fecha, hora, servicio, marca, modelo, patente, dueno }){
+  // crea cliente + vehiculo si no existen
+  const cli = await upsertCliente({ nombre: dueno, email: null, telefono: null });
+  const veh = await upsertVehiculo({ cliente_id: cli.id, patente, marca, modelo, ano: null });
+
+  const fecha_inicio = new Date(`${fecha}T${hora}:00Z`).toISOString();
+  const { data, error } = await sb.from('cita').insert({
+    cliente_id: cli.id, vehiculo_id: veh.id, fecha_inicio, fecha_fin: fecha_inicio, motivo: servicio, estado: 'PENDIENTE'
+  }).select().single();
+  if(error) throw error; return data;
+}
+
+export async function listarCitasUI(){
+  const { data, error } = await sb
+    .from('cita')
+    .select('id, fecha_inicio, estado, motivo, cliente(nombre), vehiculo(patente)')
+    .order('fecha_inicio');
+  if(error) throw error; return data;
+}
+</script>
+
+
