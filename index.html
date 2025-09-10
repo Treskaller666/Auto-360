@@ -36,16 +36,16 @@
     <script type="module">
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
-/** 1) Tus credenciales Supabase */
-const SUPABASE_URL = "https://mnztmaoeuzjhcbylnuul.supabase.co";
-const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1uenRtYW9ldXpqaGNieWxudXVsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTc1MDE3MTMsImV4cCI6MjA3MzA3NzcxM30.AjeD3Nve_6UivKBiIB59Z0UT-wGEdx6XdnV-stFxfOk";
+/* 1) Conecta Supabase */
+const SUPABASE_URL = "https://TU-PROYECTO.supabase.co";
+const SUPABASE_ANON_KEY = "TU-ANON-KEY";
 const sb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-/** 2) Helpers de conversión (UI <-> DB) */
+/* 2) Adaptadores entre tu UI y la DB */
 const toUI = (row)=> ({ code: row.sku, name: row.nombre, qty: row.stock ?? 0, min: row.stock_min ?? 0 });
 const toDB = (it)=> ({ sku: it.code, nombre: it.name, stock: it.qty ?? 0, stock_min: it.min ?? 0 });
 
-/** 3) API mínima contra tabla 'inventario' */
+/* 3) CRUD inventario en Supabase */
 async function invList(){
   const { data, error } = await sb.from('inventario').select('sku,nombre,stock,stock_min').order('nombre');
   if(error) throw error;
@@ -68,117 +68,120 @@ async function invDelete(sku){
   if(error) throw error;
 }
 
-/** 4) UI y lógica */
-const tbody = document.getElementById('bossStock');
-const modal = document.getElementById('stockModal');
-const title = document.getElementById('stockModalTitle');
-
-const f_code = document.getElementById('f_code');
-const f_name = document.getElementById('f_name');
-const f_qty  = document.getElementById('f_qty');
-const f_min  = document.getElementById('f_min');
-
-const btnAdd   = document.getElementById('btnAddItem');
-const btnSave  = document.getElementById('btnSaveItem');
-const btnClose = document.getElementById('btnCloseModal');
-const btnCsv   = document.getElementById('btnExportCSV');
-
-let stockCache = [];
-let editingIndex = null;
-
-function openModal(item=null, index=null){
-  editingIndex = index;
-  title.textContent = item ? 'Editar ítem' : 'Nuevo ítem';
-  f_code.value = item?.code || '';
-  f_name.value = item?.name || '';
-  f_qty.value  = item?.qty  ?? 0;
-  f_min.value  = item?.min  ?? 0;
-  modal.style.display = 'flex';
-}
-function closeModal(){ modal.style.display = 'none'; }
-
-function render(){
-  if(!tbody) return;
-  tbody.innerHTML = '';
-  stockCache.forEach((p, idx)=>{
-    const low = (p.qty||0) <= (p.min||0);
-    const tr = document.createElement('tr');
-    tr.innerHTML = `
-      <td style="padding:8px;border-top:1px solid #e5e7eb;">${p.code}</td>
-      <td style="padding:8px;border-top:1px solid #e5e7eb;">${p.name}</td>
-      <td style="padding:8px;border-top:1px solid #e5e7eb;text-align:right;">${p.qty ?? 0}</td>
-      <td style="padding:8px;border-top:1px solid #e5e7eb;text-align:right;">${p.min ?? 0}</td>
-      <td style="padding:8px;border-top:1px solid #e5e7eb;">${low ? '⚠️ Bajo' : '✅ OK'}</td>
-      <td style="padding:8px;border-top:1px solid #e5e7eb;">
-        <button data-i="${idx}" data-act="edit">Editar</button>
-        <button data-i="${idx}" data-act="clone">Clonar</button>
-        <button data-i="${idx}" data-act="del">Eliminar</button>
-      </td>`;
-    tbody.appendChild(tr);
+/* 4) Hook: usa tu UI existente (IDs ya presentes en tu HTML) */
+(async function wireStockAgainstSupabase(){
+  // Esperar a que exista tu tabla del jefe
+  const wait = (sel)=> new Promise(r=>{
+    const t = setInterval(()=>{ const n = document.querySelector(sel); if(n){ clearInterval(t); r(n); }}, 120);
   });
-}
 
-async function reload(){
-  try {
+  const tbSel = '#bossStock'; // << tu tbody original
+  await wait(tbSel);
+
+  // Cache y recarga
+  let stockCache = [];
+  async function reload(){
     stockCache = await invList();
-    render();
-  } catch(e){
-    alert('Error cargando inventario: ' + (e.message || e));
+    renderBossStock_SUPA();
+    renderStock_SUPA(); // si tienes otra tabla de técnico
   }
-}
 
-btnAdd?.addEventListener('click', ()=> openModal());
-btnClose?.addEventListener('click', closeModal);
+  function renderBossStock_SUPA(){
+    const tb = document.querySelector(tbSel);
+    if(!tb) return;
+    tb.innerHTML = '';
+    stockCache.forEach((p, idx)=>{
+      const low = (p.qty||0) <= (p.min||0);
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td>${p.code}</td>
+        <td>${p.name}</td>
+        <td>${p.qty ?? 0}</td>
+        <td>${p.min ?? 0}</td>
+        <td>${low?'<span class="chip low">Bajo</span>':'<span class="chip ok">OK</span>'}</td>
+        <td class="actions">
+          <button class="btn" data-i="${idx}" data-act="edit">Editar</button>
+          <button class="btn" data-i="${idx}" data-act="clone">Clonar</button>
+          <button class="btn" data-i="${idx}" data-act="del">Eliminar</button>
+        </td>`;
+      tb.appendChild(tr);
+    });
 
-btnSave?.addEventListener('click', async ()=>{
-  const code = f_code.value.trim();
-  const name = f_name.value.trim();
-  const qty  = Math.max(0, Number(f_qty.value||0));
-  const min  = Math.max(0, Number(f_min.value||0));
-  if(!code || !name){ alert('Código y nombre son obligatorios.'); return; }
-  try {
+    // Acciones en tu tabla original
+    tb.onclick = async (e)=>{
+      const btn = e.target.closest('button'); if(!btn) return;
+      const i = Number(btn.dataset.i);
+      const act = btn.dataset.act;
+      const it = stockCache[i];
+      if(!it) return;
+
+      if(act==='edit'){ openModal(it); }
+      if(act==='clone'){ await invUpsert({ ...it, code: it.code + '-C' }); await reload(); }
+      if(act==='del' && confirm('¿Eliminar este ítem?')){ await invDelete(it.code); await reload(); }
+    };
+  }
+
+  // Referencias a tu modal/botones originales
+  const modal   = document.getElementById('stockModal');
+  const f_code  = document.getElementById('f_code');
+  const f_name  = document.getElementById('f_name');
+  const f_qty   = document.getElementById('f_qty');
+  const f_min   = document.getElementById('f_min');
+  const btnSave = document.getElementById('btnSaveItem');
+  const btnAdd  = document.getElementById('btnAddItem');
+  const btnClose= document.getElementById('btnCloseModal');
+  const btnCsv  = document.getElementById('btnExportCSV');
+
+  function openModal(item=null){
+    if(!modal) return;
+    document.getElementById('stockModalTitle').textContent = item? 'Editar ítem' : 'Nuevo ítem';
+    f_code.value = item?.code || '';
+    f_name.value = item?.name || '';
+    f_qty.value  = item?.qty  ?? 0;
+    f_min.value  = item?.min  ?? 0;
+    modal.classList.add('open'); // usa tu clase original
+  }
+
+  btnAdd?.addEventListener('click', ()=> openModal());
+  btnClose?.addEventListener('click', ()=> modal.classList.remove('open'));
+
+  btnSave?.addEventListener('click', async ()=>{
+    const code = f_code.value.trim();
+    const name = f_name.value.trim();
+    const qty  = Math.max(0, Number(f_qty.value||0));
+    const min  = Math.max(0, Number(f_min.value||0));
+    if(!code || !name){ alert('Código y nombre son obligatorios.'); return; }
     await invUpsert({ code, name, qty, min });
-    closeModal();
+    modal.classList.remove('open');
     await reload();
-  } catch(e){
-    alert('Error guardando: ' + (e.message || e));
+  });
+
+  // Tabla del técnico (si existe en tu HTML)
+  function renderStock_SUPA(){
+    const tb = document.querySelector('#tblStock');
+    if(!tb) return;
+    tb.innerHTML = '';
+    stockCache.forEach(p=>{
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td>${p.code}</td><td>${p.name}</td><td>${p.qty ?? 0}</td><td>${p.min ?? 0}</td>`;
+      tb.appendChild(tr);
+    });
   }
-});
 
-tbody?.addEventListener('click', async (e)=>{
-  const btn = e.target.closest('button'); if(!btn) return;
-  const i = Number(btn.dataset.i);
-  const act = btn.dataset.act;
-  const it = stockCache[i];
-  if(!it) return;
+  // Exportar CSV usando tus datos actuales
+  btnCsv?.addEventListener('click', ()=>{
+    const rows = [['code','name','qty','min'], ...stockCache.map(s=> [s.code, s.name, s.qty||0, s.min||0])];
+    const csv = rows.map(r=> r.map(x=> `"${String(x).replace(/"/g,'""')}"`).join(',')).join('\n');
+    const blob = new Blob([csv],{type:'text/csv;charset=utf-8;'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href=url; a.download='stock_supabase.csv'; a.click();
+    URL.revokeObjectURL(url);
+  });
 
-  if(act === 'edit') openModal(it, i);
-  if(act === 'clone'){
-    try{
-      await invUpsert({ ...it, code: it.code + '-C' });
-      await reload();
-    }catch(e){ alert('Error clonando: ' + (e.message||e)); }
-  }
-  if(act === 'del'){
-    if(confirm('¿Eliminar este ítem?')){
-      try{ await invDelete(it.code); await reload(); }
-      catch(e){ alert('Error eliminando: ' + (e.message||e)); }
-    }
-  }
-});
-
-btnCsv?.addEventListener('click', ()=>{
-  const rows = [['code','name','qty','min'], ...stockCache.map(s=> [s.code, s.name, s.qty||0, s.min||0])];
-  const csv = rows.map(r=> r.map(x=> `"${String(x).replace(/"/g,'""')}"`).join(',')).join('\n');
-  const blob = new Blob([csv],{type:'text/csv;charset=utf-8;'});
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a'); a.href=url; a.download='stock.csv'; a.click();
-  URL.revokeObjectURL(url);
-});
-
-/** Primera carga */
-reload();
+  await reload();
+})();
 </script>
+
 
   
     
