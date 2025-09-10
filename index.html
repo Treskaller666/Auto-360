@@ -32,6 +32,45 @@
       --focus:0 0 0 6px rgba(0,224,255,.22), 0 0 0 1px var(--brand2);
     }
 
+    /*a*/
+    <script type="module">
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+
+const SUPABASE_URL = "https://TU-PROYECTO.supabase.co"; // <-- pega tu URL
+const SUPABASE_ANON_KEY = "TU-ANON-KEY";                // <-- pega tu key
+const sb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+// Funciones para inventario
+async function cargarInventario() {
+  const { data, error } = await sb.from('inventario').select('*').order('nombre');
+  if (error) { console.error(error); return []; }
+  return data;
+}
+
+async function guardarItem(item) {
+  const { error } = await sb.from('inventario').upsert(item);
+  if (error) console.error(error);
+}
+
+async function eliminarItem(sku) {
+  const { error } = await sb.from('inventario').delete().eq('sku', sku);
+  if (error) console.error(error);
+}
+
+// Aquí puedes reemplazar la lógica de localStorage de tu CRUD de stock
+// Ejemplo rápido:
+(async ()=>{
+  const items = await cargarInventario();
+  console.log("Inventario desde Supabase:", items);
+})();
+</script>
+
+    
+    
+    
+    
+    
+    
     /* ==================== RESET ==================== */
     *{box-sizing:border-box}
     html,body{height:100%}
