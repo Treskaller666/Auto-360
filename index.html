@@ -982,5 +982,126 @@ export async function listarCitasUI(){
   if(error) throw error; return data;
 }
 </script>
+<script type="module">
+  
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
+/* ╭──────────────────────────────╮
+   │ 1) Conexión a Supabase       │
+   ╰──────────────────────────────╯ */
+const SUPABASE_URL = "https://mnztmaoeuzjhcbylnuul.supabase.co";
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1uenRtYW9ldXpqaGNieWxudXVsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTc1MDE3MTMsImV4cCI6MjA3MzA3NzcxM30.AjeD3Nve_6UivKBiIB59Z0UT-wGEdx6XdnV-stFxfOk";
+const sb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+/* ╭──────────────────────────────╮
+   │ 2) Mapeos UI <-> BD          │
+   ╰──────────────────────────────╯ */
+const invToUI = r => ({ code:r.sku, name:r.nombre, qty:r.stock ?? 0, min:r.stock_min ?? 0 });
+const invToDB = it => ({ sku:it.code, nombre:it.name, stock:it.qty ?? 0, stock_min:it.min ?? 0 });
+
+/* ╭──────────────────────────────╮
+   │ 3) Carga inicial desde DB    │
+   ╰──────────────────────────────╯ */
+async function loadFromDB(){
+  try{
+    // Inventario
+    const inv = await sb.from('inventario')
+      .select('sku,nombre,stock,stock_min')
+      .order('nombre');
+    if(inv.error) throw inv.error;
+    const stock = (inv.data||[]).map(invToUI);
+
+    // Citas (tabla espejo con el shape de tu UI)
+    const ap = await sb.from('appt_legacy')
+      .select('id,date,time,svc,brand,model,plate,owner,status')
+      .order('date').order('time');
+    if(ap.error) throw ap.error;
+    const appts = ap.data||[];
+
+    // Volcar en tu store y pintar con tus funciones existentes
+    if(Array.isArray(stock)){ window.store.stock = stock; }
+    if(Array.isArray(appts)){ window.store.appts = appts; }
+    window.store.save(); // mantiene localStorage coherente con lo que vino de DB
+
+    // Si existen tus renderers, los llamamos (no tocamos sus nombres)
+    window.renderBossStock?.();
+    window.renderStock?.();
+    window.renderAppts?.();
+    window.renderBossAppts?.();
+    window.recalcKPIsAndCharts?.();
+  }catch(e){
+    console.error('[DB load] ', e);
+  }
+}
+
+/* ╭──────────────────────────────╮
+   │ 4) Sincronizador store.save  │
+   ╰──────────────────────────────╯ */
+const originalSave = window.store?.save?.bind(window.store);
+if(originalSave){
+  window.store.save = async function patchedSave(){
+    // 4.a) Mantener tu comportamiento original (localStorage)
+    originalSave?.();
+
+    // 4.b) Sincronizar INVENTARIO (upsert + delete faltantes)
+    try{
+      const cur = window.store.stock || [];
+      // upserts por lote (si prefieres, puedes hacerlo uno a uno)
+      if(cur.length){
+        const { error } = await sb.from('inventario').upsert(cur.map(invToDB), { onConflict: 'sku' });
+        if(error) console.error('[inv upsert]', error);
+      }
+      // borrar en DB lo que ya no esté en store
+      const { data:rows } = await sb.from('inventario').select('sku');
+      const keep = new Set(cur.map(x=> x.code));
+      const toDelete = (rows||[]).map(r=>r.sku).filter(sku=> !keep.has(sku));
+      if(toDelete.length){
+        const { error } = await sb.from('inventario').delete().in('sku', toDelete);
+        if(error) console.error('[inv delete]', error);
+      }
+    }catch(e){ console.error('[inv sync]', e); }
+
+    // 4.c) Sincronizar APPTS (tabla espejo)
+    try{
+      const ap = window.store.appts || [];
+      if(ap.length){
+        const { error } = await sb.from('appt_legacy').upsert(ap, { onConflict: 'id' });
+        if(error) console.error('[appt upsert]', error);
+      }
+      const { data:rows } = await sb.from('appt_legacy').select('id');
+      const keep = new Set(ap.map(x=> x.id));
+      const toDelete = (rows||[]).map(r=>r.id).filter(id=> !keep.has(id));
+      if(toDelete.length){
+        const { error } = await sb.from('appt_legacy').delete().in('id', toDelete);
+        if(error) console.error('[appt delete]', error);
+      }
+    }catch(e){ console.error('[appt sync]', e); }
+  };
+}
+
+/* ╭──────────────────────────────╮
+   │ 5) (Opcional) hook acciones  │
+   ╰──────────────────────────────╯ */
+(function hookButtons(){
+  // Cuando el jefe crea/edita/borra ítems, tu código ya llama store.save().
+  // Este parche extra es solo por si hay flows que NO llaman store.save().
+  const tb = document.querySelector('#bossStock');
+  if(tb){
+    tb.addEventListener('click', async (e)=>{
+      const btn = e.target.closest('button');
+      if(!btn) return;
+      // después de cualquier acción, sincronizamos por si algún flujo omitió store.save()
+      setTimeout(()=> window.store.save(), 20);
+    });
+  }
+  // Técnico (descuento de stock): tu código ya hace store.save() → DB sync
+})();
+
+/* ╭──────────────────────────────╮
+   │ 6) Disparar carga inicial    │
+   ╰──────────────────────────────╯ */
+loadFromDB();
+</script>
+</body>
+</html>
 
