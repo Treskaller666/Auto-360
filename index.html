@@ -36,35 +36,151 @@
     <script type="module">
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
-const SUPABASE_URL = "https://TU-PROYECTO.supabase.co"; // <-- pega tu URL
-const SUPABASE_ANON_KEY = "TU-ANON-KEY";                // <-- pega tu key
+/** 1) Tus credenciales Supabase */
+const SUPABASE_URL = "https://mnztmaoeuzjhcbylnuul.supabase.co";
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1uenRtYW9ldXpqaGNieWxudXVsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTc1MDE3MTMsImV4cCI6MjA3MzA3NzcxM30.AjeD3Nve_6UivKBiIB59Z0UT-wGEdx6XdnV-stFxfOk";
 const sb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-// Funciones para inventario
-async function cargarInventario() {
-  const { data, error } = await sb.from('inventario').select('*').order('nombre');
-  if (error) { console.error(error); return []; }
-  return data;
-}
+/** 2) Helpers de conversión (UI <-> DB) */
+const toUI = (row)=> ({ code: row.sku, name: row.nombre, qty: row.stock ?? 0, min: row.stock_min ?? 0 });
+const toDB = (it)=> ({ sku: it.code, nombre: it.name, stock: it.qty ?? 0, stock_min: it.min ?? 0 });
 
-async function guardarItem(item) {
-  const { error } = await sb.from('inventario').upsert(item);
-  if (error) console.error(error);
+/** 3) API mínima contra tabla 'inventario' */
+async function invList(){
+  const { data, error } = await sb.from('inventario').select('sku,nombre,stock,stock_min').order('nombre');
+  if(error) throw error;
+  return data.map(toUI);
 }
-
-async function eliminarItem(sku) {
+async function invUpsert(item){
+  const row = toDB(item);
+  const { data: exists } = await sb.from('inventario').select('sku').eq('sku', row.sku).maybeSingle();
+  let res;
+  if(exists){
+    res = await sb.from('inventario').update(row).eq('sku', row.sku).select().single();
+  }else{
+    res = await sb.from('inventario').insert(row).select().single();
+  }
+  if(res.error) throw res.error;
+  return toUI(res.data);
+}
+async function invDelete(sku){
   const { error } = await sb.from('inventario').delete().eq('sku', sku);
-  if (error) console.error(error);
+  if(error) throw error;
 }
 
-// Aquí puedes reemplazar la lógica de localStorage de tu CRUD de stock
-// Ejemplo rápido:
-(async ()=>{
-  const items = await cargarInventario();
-  console.log("Inventario desde Supabase:", items);
-})();
+/** 4) UI y lógica */
+const tbody = document.getElementById('bossStock');
+const modal = document.getElementById('stockModal');
+const title = document.getElementById('stockModalTitle');
+
+const f_code = document.getElementById('f_code');
+const f_name = document.getElementById('f_name');
+const f_qty  = document.getElementById('f_qty');
+const f_min  = document.getElementById('f_min');
+
+const btnAdd   = document.getElementById('btnAddItem');
+const btnSave  = document.getElementById('btnSaveItem');
+const btnClose = document.getElementById('btnCloseModal');
+const btnCsv   = document.getElementById('btnExportCSV');
+
+let stockCache = [];
+let editingIndex = null;
+
+function openModal(item=null, index=null){
+  editingIndex = index;
+  title.textContent = item ? 'Editar ítem' : 'Nuevo ítem';
+  f_code.value = item?.code || '';
+  f_name.value = item?.name || '';
+  f_qty.value  = item?.qty  ?? 0;
+  f_min.value  = item?.min  ?? 0;
+  modal.style.display = 'flex';
+}
+function closeModal(){ modal.style.display = 'none'; }
+
+function render(){
+  if(!tbody) return;
+  tbody.innerHTML = '';
+  stockCache.forEach((p, idx)=>{
+    const low = (p.qty||0) <= (p.min||0);
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td style="padding:8px;border-top:1px solid #e5e7eb;">${p.code}</td>
+      <td style="padding:8px;border-top:1px solid #e5e7eb;">${p.name}</td>
+      <td style="padding:8px;border-top:1px solid #e5e7eb;text-align:right;">${p.qty ?? 0}</td>
+      <td style="padding:8px;border-top:1px solid #e5e7eb;text-align:right;">${p.min ?? 0}</td>
+      <td style="padding:8px;border-top:1px solid #e5e7eb;">${low ? '⚠️ Bajo' : '✅ OK'}</td>
+      <td style="padding:8px;border-top:1px solid #e5e7eb;">
+        <button data-i="${idx}" data-act="edit">Editar</button>
+        <button data-i="${idx}" data-act="clone">Clonar</button>
+        <button data-i="${idx}" data-act="del">Eliminar</button>
+      </td>`;
+    tbody.appendChild(tr);
+  });
+}
+
+async function reload(){
+  try {
+    stockCache = await invList();
+    render();
+  } catch(e){
+    alert('Error cargando inventario: ' + (e.message || e));
+  }
+}
+
+btnAdd?.addEventListener('click', ()=> openModal());
+btnClose?.addEventListener('click', closeModal);
+
+btnSave?.addEventListener('click', async ()=>{
+  const code = f_code.value.trim();
+  const name = f_name.value.trim();
+  const qty  = Math.max(0, Number(f_qty.value||0));
+  const min  = Math.max(0, Number(f_min.value||0));
+  if(!code || !name){ alert('Código y nombre son obligatorios.'); return; }
+  try {
+    await invUpsert({ code, name, qty, min });
+    closeModal();
+    await reload();
+  } catch(e){
+    alert('Error guardando: ' + (e.message || e));
+  }
+});
+
+tbody?.addEventListener('click', async (e)=>{
+  const btn = e.target.closest('button'); if(!btn) return;
+  const i = Number(btn.dataset.i);
+  const act = btn.dataset.act;
+  const it = stockCache[i];
+  if(!it) return;
+
+  if(act === 'edit') openModal(it, i);
+  if(act === 'clone'){
+    try{
+      await invUpsert({ ...it, code: it.code + '-C' });
+      await reload();
+    }catch(e){ alert('Error clonando: ' + (e.message||e)); }
+  }
+  if(act === 'del'){
+    if(confirm('¿Eliminar este ítem?')){
+      try{ await invDelete(it.code); await reload(); }
+      catch(e){ alert('Error eliminando: ' + (e.message||e)); }
+    }
+  }
+});
+
+btnCsv?.addEventListener('click', ()=>{
+  const rows = [['code','name','qty','min'], ...stockCache.map(s=> [s.code, s.name, s.qty||0, s.min||0])];
+  const csv = rows.map(r=> r.map(x=> `"${String(x).replace(/"/g,'""')}"`).join(',')).join('\n');
+  const blob = new Blob([csv],{type:'text/csv;charset=utf-8;'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a'); a.href=url; a.download='stock.csv'; a.click();
+  URL.revokeObjectURL(url);
+});
+
+/** Primera carga */
+reload();
 </script>
 
+  
     
     
     
@@ -439,6 +555,64 @@ async function eliminarItem(sku) {
 
         </div>
       </div>
+      <!--modi-->
+      <!-- ===== Stock & CRUD (con Supabase) ===== -->
+<section id="stockCRUD" style="margin:24px 0;">
+  <h2>Stock & CRUD</h2>
+
+  <div style="margin:8px 0;">
+    <button id="btnAddItem">Nuevo ítem</button>
+    <button id="btnExportCSV">Exportar CSV</button>
+  </div>
+
+  <div class="table-wrap" style="overflow:auto;border:1px solid #e5e7eb;border-radius:8px;">
+    <table style="width:100%;border-collapse:collapse;">
+      <thead style="background:#f8fafc">
+        <tr>
+          <th style="text-align:left;padding:8px;">Código (SKU)</th>
+          <th style="text-align:left;padding:8px;">Nombre</th>
+          <th style="text-align:right;padding:8px;">Stock</th>
+          <th style="text-align:right;padding:8px;">Mínimo</th>
+          <th style="text-align:left;padding:8px;">Estado</th>
+          <th style="text-align:left;padding:8px;">Acciones</th>
+        </tr>
+      </thead>
+      <tbody id="bossStock"></tbody>
+    </table>
+  </div>
+</section>
+
+<!-- Modal simple -->
+<div id="stockModal" style="position:fixed;inset:0;background:rgba(0,0,0,.45);display:none;align-items:center;justify-content:center;padding:16px;">
+  <div style="background:#fff;max-width:520px;width:100%;border-radius:12px;padding:16px;">
+    <h3 id="stockModalTitle" style="margin:0 0 12px;">Nuevo ítem</h3>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+      <div>
+        <label>SKU</label>
+        <input id="f_code" placeholder="ACE-5W30" style="width:100%;padding:10px;border:1px solid #cbd5e1;border-radius:8px;">
+      </div>
+      <div>
+        <label>Nombre</label>
+        <input id="f_name" placeholder="Aceite 5W30 1L" style="width:100%;padding:10px;border:1px solid #cbd5e1;border-radius:8px;">
+      </div>
+      <div>
+        <label>Stock</label>
+        <input id="f_qty" type="number" min="0" value="0" style="width:100%;padding:10px;border:1px solid #cbd5e1;border-radius:8px;">
+      </div>
+      <div>
+        <label>Mínimo</label>
+        <input id="f_min" type="number" min="0" value="0" style="width:100%;padding:10px;border:1px solid #cbd5e1;border-radius:8px;">
+      </div>
+    </div>
+
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px;">
+      <button id="btnCloseModal">Cancelar</button>
+      <button id="btnSaveItem">Guardar</button>
+    </div>
+  </div>
+</div>
+
 
       <!-- ==================== TÉCNICO ==================== -->
       <div id="view-tecnico" class="card" style="display:none; margin-top:16px">
